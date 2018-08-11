@@ -1,0 +1,8 @@
+﻿{
+  "Host": "localhost",
+  "Port": 3000,
+  "Namespace": "test",
+  "Set": "cache",
+  "User": "",
+  "Password": ""
+}

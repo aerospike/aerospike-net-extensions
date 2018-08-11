@@ -1,0 +1,12 @@
+Debug
+Release
+bin
+obj
+packages
+project.lock.json
+.vs
+*.user
+*.suo
+*.nupkg
+*.snk
+TestResults/
