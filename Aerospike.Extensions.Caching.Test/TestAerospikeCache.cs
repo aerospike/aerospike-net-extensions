@@ -106,6 +106,14 @@ namespace Aerospike.Extensions.Caching.Test
 		}
 
 		[TestMethod]
+		public void TestSyncNotFound()
+		{
+			string key = "UNKNOWN";
+			byte[] returnVal = cache.Get(key);
+			Assert.IsNull(returnVal);
+		}
+
+		[TestMethod]
 		public async Task TestAsync()
 		{
 			var message = "Hello, async!";
@@ -128,6 +136,14 @@ namespace Aerospike.Extensions.Caching.Test
 			Assert.IsNull(returnVal);
 
 			await cache.RefreshAsync(key);
+		}
+
+		[TestMethod]
+		public async Task TestAsyncNotFound()
+		{
+			string key = "UNKNOWN";
+			byte[] returnVal = await cache.GetAsync(key);
+			Assert.IsNull(returnVal);
 		}
 	}
 }
