@@ -1,5 +1,5 @@
 ﻿/* 
- * Copyright 2018 Aerospike, Inc.
+ * Copyright 2021 Aerospike, Inc.
  *
  * Portions may be licensed to Aerospike, Inc. under one or more contributor
  * license agreements.
@@ -28,6 +28,9 @@ namespace Aerospike.Extensions.Caching
 	/// </summary>
 	public class AerospikeCache : IDistributedCache, IDisposable
 	{
+		private static readonly DateTime AerospikeEpoch = new DateTime(2010, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+		private const string ExpirationBinName = "vt";
+
 		private AsyncClient client;
 		private readonly AerospikeCacheOptions config;
 		private readonly SemaphoreSlim clientLock = new SemaphoreSlim(initialCount: 1, maxCount: 1);
@@ -46,48 +49,25 @@ namespace Aerospike.Extensions.Caching
 			{
 				this.config.ClientPolicy = new AsyncClientPolicy();
 			}
-
-			// Set default record expiration from DefaultSlidingExpiration config.
-			this.config.ClientPolicy.writePolicyDefault.expiration = (int)config.DefaultSlidingExpiration.TotalSeconds;
 		}
 
 		public byte[] Get(string key)
 		{
 			Connect();
 
-			Record record = null;
+			object obj = client.Execute(null, new Key(config.Namespace, config.Set, key), 
+				"readtouch", "readTouch", Value.Get(config.BinName));
 
-			try
-			{
-				// Read value and reset expiration (via touch) in a single command.
-				// Use default record expiration by setting policy to null.
-				record = client.Operate(null, new Key(config.Namespace, config.Set, key),
-					Operation.Get(config.BinName),
-					Operation.Touch()
-					);
-
-				return (byte[])record.GetValue(config.BinName);
-			}
-			catch (AerospikeException ae)
-			{
-				if (ae.Result == ResultCode.KEY_NOT_FOUND_ERROR)
-				{
-					return null;
-				}
-				throw;
-			}
+			return (byte[])obj;
 		}
 
 		public Task<byte[]> GetAsync(string key, CancellationToken token = default(CancellationToken))
 		{
 			Connect();
 
-			// Read value and reset expiration (via touch) in a single command.
-			// Use default record expiration by setting policy to null.
-			RecordHandler listener = new RecordHandler(token, config.BinName);
-			client.Operate(null, listener, new Key(config.Namespace, config.Set, key),
-				Operation.Get(config.BinName),
-				Operation.Touch()
+			ExecuteHandler listener = new ExecuteHandler(token);
+			client.Execute(null, listener, new Key(config.Namespace, config.Set, key),
+				"readtouch", "readTouch", Value.Get(config.BinName)
 				);
 			return listener.Task;
 		}
@@ -96,18 +76,7 @@ namespace Aerospike.Extensions.Caching
 		{
 			Connect();
 
-			try
-			{
-				// Use default record expiration by setting policy to null.
-				client.Touch(null, new Key(config.Namespace, config.Set, key));
-			}
-			catch (AerospikeException ae)
-			{
-				if (ae.Result != ResultCode.KEY_NOT_FOUND_ERROR)
-				{
-					throw;
-				}
-			}
+			client.Execute(null, new Key(config.Namespace, config.Set, key), "readtouch", "touch");
 		}
 
 		public Task RefreshAsync(string key, CancellationToken token = default(CancellationToken))
@@ -115,20 +84,21 @@ namespace Aerospike.Extensions.Caching
 			Connect();
 
 			TouchHandler listener = new TouchHandler(token);
-			// Use default record expiration by setting policy to null.
-			client.Touch(null, listener, new Key(config.Namespace, config.Set, key));
+			client.Execute(null, listener, new Key(config.Namespace, config.Set, key), "readtouch", "touch");
 			return listener.Task;
 		}
 
 		public void Remove(string key)
 		{
 			Connect();
+
 			client.Delete(null, new Key(config.Namespace, config.Set, key));
 		}
 
 		public Task RemoveAsync(string key, CancellationToken token = default(CancellationToken))
 		{
 			Connect();
+
 			DeleteHandler listener = new DeleteHandler(token);
 			client.Delete(null, listener, new Key(config.Namespace, config.Set, key));
 			return listener.Task;
@@ -138,38 +108,130 @@ namespace Aerospike.Extensions.Caching
 		{
 			Connect();
 
-			WritePolicy policy = null;
-			int expiration = ExpirationSeconds(options);
+			SetExpiration(options, out int exp, out int expBin);
 
-			if (expiration > 0 && expiration != client.writePolicyDefault.expiration)
+			WritePolicy policy = null;
+
+			if (exp > 0)
 			{
 				// Use non-default record expiration.
-				policy = new WritePolicy(client.writePolicyDefault);
-				policy.expiration = expiration;
+				policy = new WritePolicy(client.writePolicyDefault)
+				{
+					expiration = exp
+				};
 			}
 
-			client.Put(policy, new Key(config.Namespace, config.Set, key), new Bin(config.BinName, value));
+			if (expBin >= 0)
+			{
+				client.Put(policy, new Key(config.Namespace, config.Set, key),
+								   new Bin(config.BinName, value), new Bin(ExpirationBinName, expBin));
+			}
+			else
+			{
+				client.Put(policy, new Key(config.Namespace, config.Set, key),
+								   new Bin(config.BinName, value));
+			}
 		}
 
 		public Task SetAsync(string key, byte[] value, DistributedCacheEntryOptions options, CancellationToken token = default(CancellationToken))
 		{
 			Connect();
 
-			WritePolicy policy = null;
-			int expiration = ExpirationSeconds(options);
+			SetExpiration(options, out int exp, out int expBin);
 
-			if (expiration > 0 && expiration != client.writePolicyDefault.expiration)
+			WritePolicy policy = null;
+
+			if (exp > 0)
 			{
 				// Use non-default record expiration.
-				policy = new WritePolicy(client.writePolicyDefault);
-				policy.expiration = expiration;
+				policy = new WritePolicy(client.writePolicyDefault)
+				{
+					expiration = exp
+				};
 			}
 
 			WriteHandler listener = new WriteHandler(token);
-			client.Put(policy, listener, new Key(config.Namespace, config.Set, key), new Bin(config.BinName, value));
+
+			if (expBin >= 0)
+			{
+				client.Put(policy, listener, new Key(config.Namespace, config.Set, key),
+											 new Bin(config.BinName, value), new Bin(ExpirationBinName, expBin));
+			}
+			else
+			{
+				client.Put(policy, listener, new Key(config.Namespace, config.Set, key),
+											 new Bin(config.BinName, value));
+			}
 			return listener.Task;
 		}
     
+		private void SetExpiration(DistributedCacheEntryOptions options, out int exp, out int expBin)
+		{
+			if (options.SlidingExpiration.HasValue)
+			{
+				exp = (int)options.SlidingExpiration.Value.TotalSeconds;
+
+				if (options.AbsoluteExpiration.HasValue)
+				{
+					int abs = (int)options.AbsoluteExpiration.Value.Subtract(DateTime.UtcNow).TotalSeconds;
+
+					if (abs > exp)
+					{
+						// Use sliding expiration up until relative absolute expiration.
+						expBin = (int)options.AbsoluteExpiration.Value.Subtract(AerospikeEpoch).TotalSeconds;
+					}
+					else
+					{
+						// Use absolute relative expiration only and do not set expiration bin.
+						exp = abs;
+						expBin = -1;
+					}
+				}
+				else if (options.AbsoluteExpirationRelativeToNow.HasValue)
+				{
+					int abs = (int)options.AbsoluteExpirationRelativeToNow.Value.TotalSeconds;
+
+					if (abs > exp)
+					{
+						// Use sliding expiration up until relative absolute expiration.
+						expBin = (int)DateTime.UtcNow.AddSeconds(abs).Subtract(AerospikeEpoch).TotalSeconds;
+					}
+					else
+					{
+						// Use absolute relative expiration only and do not set expiration bin.
+						exp = abs;
+						expBin = -1;
+					}
+				}
+				else
+				{
+					// Use sliding expiration only.
+					expBin = 0;
+				}
+				return;
+			}
+
+			if (options.AbsoluteExpiration.HasValue)
+			{
+				// Use absolute expiration only and do not set expiration bin.
+				exp = (int)options.AbsoluteExpiration.Value.Subtract(DateTime.UtcNow).TotalSeconds;
+				expBin = -1;
+				return;
+			}
+
+			if (options.AbsoluteExpirationRelativeToNow.HasValue)
+			{
+				// Use absolute relative expiration only and do not set expiration bin.
+				exp = (int)options.AbsoluteExpirationRelativeToNow.Value.TotalSeconds;
+				expBin = -1;
+				return;
+			}
+
+			// Use default expiration and do not set expiration bin.
+			exp = 0;
+			expBin = -1;
+		}
+
 		private void Connect()
 		{
 			if (client != null)
@@ -184,6 +246,17 @@ namespace Aerospike.Extensions.Caching
 				if (client == null)
 				{
 					client = new AsyncClient(config.ClientPolicy, config.Hosts);
+
+					try
+					{
+						RegisterUDF();
+					}
+					catch (Exception)
+					{
+						client.Close();
+						client = null;
+						throw;
+					}
 				}
 			}
 			finally
@@ -192,36 +265,56 @@ namespace Aerospike.Extensions.Caching
 			}
 		}
 
-		private int ExpirationSeconds(DistributedCacheEntryOptions options)
+		private void RegisterUDF()
 		{
-			// Zero means default expiration.
-			int relativeSeconds = 0;
+			string packageContents = @"
+local function setTTL(r)
+  local vt = r['vt']
+    
+  if vt ~= nil then
+    -- Get last update time in seconds since Aerospike epoch (2010/1/1 UTC).
+    local lut = math.floor(record.last_update_time(r) / 1000)
+    -- Get current time in seconds since Aerospike epoch (2010/1/1 UTC).
+    local now = os.time() - 1262304000
+    -- Get new ttl in seconds.
+    local ttl = now - lut + record.ttl(r)
 
-			if (options.AbsoluteExpirationRelativeToNow.HasValue)
-			{
-				relativeSeconds = (int)options.AbsoluteExpirationRelativeToNow.Value.TotalSeconds;
-			}
-			else if (options.AbsoluteExpiration.HasValue)
-			{
-				relativeSeconds = (int)options.AbsoluteExpiration.Value.Subtract(DateTime.UtcNow).TotalSeconds;
-			}
+    -- Adjust ttl if greater than absolute void time.    
+    if vt > 0 and ttl + now > vt then
+      ttl = vt - now
+    end
 
-			if (options.SlidingExpiration.HasValue)
-			{
-				int slidingSeconds = (int)options.SlidingExpiration.Value.TotalSeconds;
+    -- Only set a valid ttl.
+	-- Otherwise, let record expire.
+    if ttl >= 1 then
+      -- Set ttl.
+      record.set_ttl(r, ttl)
+	  aerospike:update(r)
+    end
+  end
+end
 
-				if (relativeSeconds == 0)
-				{
-					return slidingSeconds;
-				}
+-- Read bin and reset ttl when applicable.
+function readTouch(r,name)
+  if not aerospike:exists(r) then
+    return nil
+  end
+ 
+  setTTL(r) 
+  return r[name]
+end
 
-				if (slidingSeconds == 0)
-				{
-					return relativeSeconds;
-				}
-				return (slidingSeconds <= relativeSeconds) ? slidingSeconds : relativeSeconds;
-			}
-			return relativeSeconds;
+-- Reset ttl when applicable.
+function touch(r)
+  if not aerospike:exists(r) then
+    return
+  end
+ 
+  setTTL(r) 
+end
+";
+			RegisterTask task = client.RegisterUdfString(null, packageContents, "readtouch.lua", Language.LUA);
+			task.Wait();
 		}
 
 		public void Dispose()
@@ -234,35 +327,26 @@ namespace Aerospike.Extensions.Caching
 		}
 	}
 
-	internal sealed class RecordHandler : RecordListener
+	internal sealed class ExecuteHandler : ExecuteListener
 	{
 		private readonly TaskCompletionSource<byte[]> tcs = new TaskCompletionSource<byte[]>();
 		private readonly CancellationTokenRegistration ctr;
-		private readonly string binName;
 
-		public RecordHandler(CancellationToken token, string binName)
+		public ExecuteHandler(CancellationToken token)
 		{
 			ctr = token.Register(() => tcs.TrySetCanceled(), useSynchronizationContext: false);
-			this.binName = binName;
 		}
 
-		public void OnSuccess(Key key, Record record)
+		public void OnSuccess(Key key, object obj)
 		{
-			byte[] result = (byte[])record.GetValue(binName);
+			byte[] result = (byte[])obj;
 			tcs.TrySetResult(result);
 			ctr.Dispose();
 		}
 
 		public void OnFailure(AerospikeException ae)
 		{
-			if (ae.Result == ResultCode.KEY_NOT_FOUND_ERROR)
-			{
-				tcs.TrySetResult(null);
-			}
-			else
-			{
-				tcs.TrySetException(ae);
-			}
+			tcs.TrySetException(ae);
 			ctr.Dispose();
 		}
 
@@ -294,7 +378,7 @@ namespace Aerospike.Extensions.Caching
 		public System.Threading.Tasks.Task Task { get { return tcs.Task; } }
 	}
 
-	internal sealed class TouchHandler : WriteListener
+	internal sealed class TouchHandler : ExecuteListener
 	{
 		private readonly TaskCompletionSource<Key> tcs = new TaskCompletionSource<Key>();
 		private readonly CancellationTokenRegistration ctr;
@@ -304,7 +388,7 @@ namespace Aerospike.Extensions.Caching
 			ctr = token.Register(() => tcs.TrySetCanceled(), useSynchronizationContext: false);
 		}
 
-		public void OnSuccess(Key key)
+		public void OnSuccess(Key key, object obj)
 		{
 			tcs.TrySetResult(key);
 			ctr.Dispose();
@@ -312,14 +396,7 @@ namespace Aerospike.Extensions.Caching
 
 		public void OnFailure(AerospikeException ae)
 		{
-			if (ae.Result == ResultCode.KEY_NOT_FOUND_ERROR)
-			{
-				tcs.TrySetResult(null);
-			}
-			else
-			{
-				tcs.TrySetException(ae);
-			}
+			tcs.TrySetException(ae);
 			ctr.Dispose();
 		}
 

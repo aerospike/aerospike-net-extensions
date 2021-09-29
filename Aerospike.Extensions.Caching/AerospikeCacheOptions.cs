@@ -1,5 +1,5 @@
 ﻿/* 
- * Copyright 2018 Aerospike, Inc.
+ * Copyright 2021 Aerospike, Inc.
  *
  * Portions may be licensed to Aerospike, Inc. under one or more contributor
  * license agreements.
@@ -48,14 +48,9 @@ namespace Aerospike.Extensions.Caching
 
 		/// <summary>
 		/// Aerospike bin name associated with cache value.  Default: "val"
+		/// Do not use "vt" because that bin name is reserved to store absolute expiration.
 		/// </summary>
 		public string BinName { get; set; } = "val";
-
-		/// <summary>
-		/// The default sliding expiration set for a cache entry if neither Absolute or SlidingExpiration has been set explicitly.
-		/// Default: 20 minutes.
-		/// </summary>
-		public TimeSpan DefaultSlidingExpiration { get; set; } = TimeSpan.FromMinutes(20);
 
 		/// <summary>
 		/// Aerospike configuration instance.

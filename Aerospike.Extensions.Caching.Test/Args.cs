@@ -60,8 +60,7 @@ namespace Aerospike.Extensions.Caching.Test
 				Hosts = hosts,
 				ClientPolicy = policy,
 				Namespace = config["Namespace"],
-				Set = config["Set"],
-				DefaultSlidingExpiration = expiration
+				Set = config["Set"]
 			});
 		}
 
