@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package >
+  <metadata>
+    <id>Aerospike.Extensions.Caching</id>
+    <version>2.0.0</version>
+    <title>Aerospike IDistributedCache implementation</title>
+    <authors>Aerospike</authors>
+    <owners>Aerospike</owners>
+    <license type="expression">Apache-2.0</license>
+    <projectUrl>https://github.com/aerospike/aerospike-net-extensions</projectUrl>
+    <icon>icon.png</icon>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>Aerospike IDistributedCache implementation</description>
+    <copyright>Copyright 2018-2021 Aerospike, Inc.</copyright>
+    <tags>Aerospike database C# ASP.NET .NET cache IDistributedCache</tags>
+    <dependencies>
+      <group targetFramework="netstandard">
+        <dependency id="NETStandard.Library" version="[2.0.0, )" />
+        <dependency id="Microsoft.Extensions.Caching.Abstractions" version="[2.1.1, )" />
+        <dependency id="Microsoft.Extensions.Options" version="[2.1.1, )" />
+        <dependency id="Aerospike.Client" version="[3.9.14, )" />
+      </group>
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="Aerospike.Extensions.Caching\bin\Release\netstandard2.0\Aerospike.Extensions.Caching.dll" target="lib\netstandard" />
+    <file src="icon.png" target="" />
+  </files>
+</package>
